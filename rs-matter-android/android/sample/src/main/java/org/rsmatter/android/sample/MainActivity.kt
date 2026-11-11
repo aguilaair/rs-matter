@@ -37,7 +37,16 @@ class MainActivity : Activity() {
         if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) startNode() else show("Bluetooth permission denied")
     }
 
+    private val borderRouters by lazy { org.rsmatter.android.ThreadBorderRouters(this) }
+    private var multicast: android.net.wifi.WifiManager.MulticastLock? = null
+
     private fun startNode() {
+        multicast = getSystemService(android.net.wifi.WifiManager::class.java)
+            ?.createMulticastLock("rs-matter-sample")?.apply { setReferenceCounted(false); acquire() }
+        borderRouters.start()
+        text.postDelayed({
+            show("Border routers advertise: ${borderRouters.networks().joinToString { it.networkName }.ifEmpty { "nothing yet" }}")
+        }, 8_000)
         val n = MatterNode(
             this,
             MatterNode.Config(storageDir = File(filesDir, "matter"), deviceName = "rs-matter sample"),
@@ -51,7 +60,16 @@ class MainActivity : Activity() {
                 // (adb shell am start ... --es thread_name NAME --es thread_extpanid HEX
                 //  --ei thread_panid N --ei thread_channel N --es thread_extaddr HEX).
                 override fun onThreadScan(): List<MatterNode.ThreadNetwork> {
-                    val name = intent.getStringExtra("thread_name") ?: return emptyList()
+                    val name = intent.getStringExtra("thread_name") ?: run {
+                        // No network given: what the LAN's border routers advertise. Their TXT
+                        // records carry no channel or PAN ID (extras thread_channel/thread_panid).
+                        val nets = borderRouters.networks(
+                            channel = intent.getIntExtra("thread_channel", 0),
+                            panId = intent.getIntExtra("thread_panid", 0),
+                        )
+                        show("Thread scan: ${nets.joinToString { "${it.networkName} (channel ${it.channel})" }.ifEmpty { "no border routers found" }}")
+                        return nets
+                    }
                     val net = MatterNode.ThreadNetwork(
                         networkName = name,
                         extPanId = java.lang.Long.parseUnsignedLong(intent.getStringExtra("thread_extpanid") ?: "0", 16),
@@ -88,6 +106,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         node?.stop()
+        borderRouters.stop()
+        multicast?.release()
         super.onDestroy()
     }
 }
