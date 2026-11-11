@@ -59,7 +59,7 @@ struct Net<'a> {
 }
 
 /// Each network: pan_id u16, ext_pan_id u64, channel u16 (big endian), rssi i8, lqi u8,
-/// version u8, ext_addr [8], name_len u8, name (UTF-8). As `MatterNode.packThreadScan` writes.
+/// version u8, ext_addr [8], name_len u8, name (UTF-8). As `ThreadScan.pack` writes.
 fn unpack(b: &[u8]) -> Vec<Net<'_>> {
     let mut out = Vec::new();
     let mut i = 0;

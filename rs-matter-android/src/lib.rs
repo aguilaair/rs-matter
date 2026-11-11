@@ -11,6 +11,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 mod bridge;
+mod endpoints;
 mod gatt;
 mod netctl;
 mod node;
@@ -55,6 +56,7 @@ pub extern "system" fn Java_org_rsmatter_android_MatterNode_nativeStart<'l>(
     device_name: JString<'l>,
     serial: JString<'l>,
     on_network_commissioning: jboolean,
+    endpoints: jni::objects::JIntArray<'l>,
 ) -> jlong {
     init_logging();
     let strings = (|| -> jni::errors::Result<(String, String, String)> {
@@ -65,6 +67,25 @@ pub extern "system" fn Java_org_rsmatter_android_MatterNode_nativeStart<'l>(
         ))
     })();
     let Ok((dir, name, serial)) = strings else { return 0 };
+    // [id, kind, id, kind, …] (MatterNode.Endpoint)
+    let eps = {
+        let len = env.get_array_length(&endpoints).unwrap_or(0).max(0) as usize;
+        let mut raw = vec![0i32; len];
+        if env.get_int_array_region(&endpoints, 0, &mut raw).is_err() {
+            return 0;
+        }
+        let mut eps = Vec::new();
+        for pair in raw.chunks_exact(2) {
+            match (u16::try_from(pair[0]), endpoints::Kind::from_i32(pair[1])) {
+                (Ok(id), Some(kind)) if id >= 1 => eps.push((id, kind)),
+                _ => {
+                    error!("Bad endpoint {:?}", pair);
+                    return 0;
+                }
+            }
+        }
+        eps
+    };
     let shared = match Shared::new(&mut env, &this) {
         Ok(s) => s,
         Err(e) => {
@@ -79,6 +100,7 @@ pub extern "system" fn Java_org_rsmatter_android_MatterNode_nativeStart<'l>(
         device_name: name,
         serial,
         on_network_commissioning: on_network_commissioning == JNI_TRUE,
+        endpoints: eps,
     };
 
     scan::register(shared.clone());
@@ -167,15 +189,29 @@ pub unsafe extern "system" fn Java_org_rsmatter_android_MatterNode_nativeIndicat
     }
 }
 
-/// `MatterNode.nativeSetOnOff(handle, on)`: the app switched the On/Off endpoint itself.
+/// `MatterNode.nativeSetValue(handle, endpoint, value)`: the app's new value for an endpoint
+/// (On/Off 0/1, or a sensor reading in Matter units; see `endpoints::Kind`).
 #[no_mangle]
-pub unsafe extern "system" fn Java_org_rsmatter_android_MatterNode_nativeSetOnOff(
+pub unsafe extern "system" fn Java_org_rsmatter_android_MatterNode_nativeSetValue(
     _env: JNIEnv,
     _this: JObject,
     handle: jlong,
-    on: jboolean,
+    endpoint: jint,
+    value: jint,
+) {
+    if let (Some(s), Ok(e)) = (unsafe { shared(handle) }, u16::try_from(endpoint)) {
+        let _ = s.values.0.try_send((e, value));
+    }
+}
+
+/// `MatterNode.nativeOpenCommissioningWindow(handle)`: open the basic commissioning window again.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_rsmatter_android_MatterNode_nativeOpenCommissioningWindow(
+    _env: JNIEnv,
+    _this: JObject,
+    handle: jlong,
 ) {
     if let Some(s) = unsafe { shared(handle) } {
-        let _ = s.on_off_updates.0.try_send(on == JNI_TRUE);
+        let _ = s.commands.0.try_send(node::Command::OpenCommissioningWindow);
     }
 }

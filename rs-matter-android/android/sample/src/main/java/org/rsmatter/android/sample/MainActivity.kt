@@ -87,7 +87,7 @@ class MainActivity : Activity() {
                     return true
                 }
 
-                override fun onOnOff(on: Boolean) = show("Light ${if (on) "on" else "off"}")
+                override fun onOnOff(endpoint: Int, on: Boolean) = show("Light $endpoint ${if (on) "on" else "off"}")
 
                 override fun onEvent(kind: String, detail: String) = show("$kind: $detail")
             },

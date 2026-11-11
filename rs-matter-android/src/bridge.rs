@@ -32,8 +32,10 @@ pub struct Shared {
     pub(crate) indicated: (Sender<bool>, Receiver<bool>),
     /// Kotlin asked the node to stop.
     pub(crate) stop: (Sender<()>, Receiver<()>),
-    /// The app switched the On/Off endpoint itself (`MatterNode.setOnOff`).
-    pub(crate) on_off_updates: (Sender<bool>, Receiver<bool>),
+    /// Values the app pushes for its endpoints (`MatterNode.setValue`): (endpoint, value).
+    pub(crate) values: (Sender<(u16, i32)>, Receiver<(u16, i32)>),
+    /// Requests for the running node (`MatterNode.openCommissioningWindow`).
+    pub(crate) commands: (Sender<crate::node::Command>, Receiver<crate::node::Command>),
 }
 
 /// C1 writes waiting for the BTP session; the first one comes before the peer subscribes to C2.
@@ -48,7 +50,8 @@ impl Shared {
             c2: async_channel::unbounded(),
             indicated: async_channel::bounded(1),
             stop: async_channel::bounded(1),
-            on_off_updates: async_channel::unbounded(),
+            values: async_channel::unbounded(),
+            commands: async_channel::unbounded(),
         }))
     }
 
@@ -139,7 +142,7 @@ impl Shared {
     }
 
     /// `onThreadScan(): ByteArray`: the Thread networks the app sees, packed by
-    /// `MatterNode.packThreadScan` (see [`crate::scan`]).
+    /// `ThreadScan.pack` (see [`crate::scan`]).
     pub fn thread_scan(&self) -> Result<Vec<u8>, Error> {
         self.with_env("onThreadScan", |env, node| {
             let r = env.call_method(node, "onThreadScan", "()[B", &[])?.l()?;
@@ -151,10 +154,11 @@ impl Shared {
         })
     }
 
-    /// `onOnOff(on)`: a controller switched the On/Off endpoint.
-    pub fn on_off(&self, on: bool) {
+    /// `onOnOff(endpoint, on)`: a controller switched an On/Off endpoint.
+    pub fn on_off(&self, endpoint: u16, on: bool) {
         let _ = self.with_env("onOnOff", |env, node| {
-            env.call_method(node, "onOnOff", "(Z)V", &[JValue::Bool(on.into())]).map(|_| ())
+            env.call_method(node, "onOnOff", "(IZ)V", &[JValue::Int(endpoint as i32), JValue::Bool(on.into())])
+                .map(|_| ())
         });
     }
 

@@ -13,7 +13,9 @@ import java.io.File
  * [Listener]: a Thread operational dataset ([Listener.onThreadDataset]) or Wi-Fi credentials
  * ([Listener.onWifiCredentials]). Return true once the app has taken them.
  *
- * The device has one On/Off endpoint for now ([Listener.onOnOff], [setOnOff]).
+ * What the device is, is [Config.endpoints]: On/Off lights and sensors ([Endpoint]). Controllers'
+ * On/Off commands come to [Listener.onOnOff]; the app reports its own state and sensor readings with
+ * [setOnOff], [setOccupied], [setIlluminance], [setTemperature] and [setHumidity].
  *
  * Needs the Bluetooth permissions (BLUETOOTH_CONNECT and BLUETOOTH_ADVERTISE from Android 12 on)
  * granted before [start].
@@ -40,7 +42,25 @@ class MatterNode(
          * see the device on the network commission it there and send none.
          */
         val onNetworkCommissioning: Boolean = false,
+        /** The device's endpoints (ids 1 and up, unique). The root endpoint 0 is the node's own. */
+        val endpoints: List<Endpoint> = listOf(Endpoint.OnOff(1)),
     )
+
+    /** An endpoint of the device: a Matter device type with its cluster. */
+    sealed class Endpoint(val id: Int, internal val kind: Int) {
+        /** An On/Off light (`OnOff` cluster). */
+        class OnOff(id: Int) : Endpoint(id, 1)
+        /** An occupancy sensor (`OccupancySensing`); report with [setOccupied]. */
+        class OccupancySensor(id: Int) : Endpoint(id, 2)
+        /** A light sensor (`IlluminanceMeasurement`); report with [setIlluminance]. */
+        class LightSensor(id: Int) : Endpoint(id, 3)
+        /** A temperature sensor (`TemperatureMeasurement`); report with [setTemperature]. */
+        class TemperatureSensor(id: Int) : Endpoint(id, 4)
+        /** A humidity sensor (`RelativeHumidityMeasurement`); report with [setHumidity]. */
+        class HumiditySensor(id: Int) : Endpoint(id, 5)
+
+        override fun toString() = "${javaClass.simpleName}($id)"
+    }
 
     /** A Thread network as seen by a scan (what a commissioner looks for before it sends a dataset). */
     data class ThreadNetwork(
@@ -65,8 +85,8 @@ class MatterNode(
         fun onThreadScan(): List<ThreadNetwork> = emptyList()
         /** Wi-Fi credentials from the commissioner. Return true when taken. */
         fun onWifiCredentials(ssid: ByteArray, password: ByteArray): Boolean = false
-        /** A controller switched the On/Off endpoint. */
-        fun onOnOff(on: Boolean) {}
+        /** A controller switched the On/Off endpoint [endpoint]. */
+        fun onOnOff(endpoint: Int, on: Boolean) {}
         /** What the node is doing: `pairing_code`, `qr_code`, `state`, `stopped`. */
         fun onEvent(kind: String, detail: String) {}
     }
@@ -104,10 +124,13 @@ class MatterNode(
     @Synchronized
     fun start(): Boolean {
         if (handle != 0L) return true
+        val ids = config.endpoints.map { it.id }
+        require(ids.all { it in 1..0xfffe } && ids.toSet().size == ids.size) { "endpoint ids must be unique, 1 and up" }
         config.storageDir.mkdirs()
         handle = nativeStart(
             config.storageDir.absolutePath, config.discriminator, config.passcode,
             config.deviceName, config.serialNumber, config.onNetworkCommissioning,
+            config.endpoints.flatMap { listOf(it.id, it.kind) }.toIntArray(),
         )
         return handle != 0L
     }
@@ -122,10 +145,33 @@ class MatterNode(
         ble.stop()
     }
 
-    /** The app switched the On/Off endpoint itself (a physical switch, its own UI). */
-    fun setOnOff(on: Boolean) {
+    /** The app switched On/Off endpoint [endpoint] itself (a physical switch, its own UI). */
+    fun setOnOff(endpoint: Int, on: Boolean) = setValue(endpoint, if (on) 1 else 0)
+
+    /** Occupancy sensor [endpoint]: someone is there (or not). */
+    fun setOccupied(endpoint: Int, occupied: Boolean) = setValue(endpoint, if (occupied) 1 else 0)
+
+    /** Light sensor [endpoint]: illuminance in lux. */
+    fun setIlluminance(endpoint: Int, lux: Double) = setValue(endpoint, Units.illuminance(lux))
+
+    /** Temperature sensor [endpoint]: °C. */
+    fun setTemperature(endpoint: Int, celsius: Double) = setValue(endpoint, Units.hundredths(celsius))
+
+    /** Humidity sensor [endpoint]: % relative humidity. */
+    fun setHumidity(endpoint: Int, percent: Double) = setValue(endpoint, Units.hundredths(percent))
+
+    private fun setValue(endpoint: Int, value: Int) {
         val h = handle
-        if (h != 0L) nativeSetOnOff(h, on)
+        if (h != 0L) nativeSetValue(h, endpoint, value)
+    }
+
+    /**
+     * Opens the commissioning window (15 minutes, over BLE): to pair a node that was removed from its
+     * controller, or to add it to another one. [Listener.onEvent] reports `state: commissionable`.
+     */
+    fun openCommissioningWindow() {
+        val h = handle
+        if (h != 0L) nativeOpenCommissioningWindow(h)
     }
 
     // ---- called by the Rust side (JNI), on the node's thread
@@ -150,10 +196,10 @@ class MatterNode(
         guarded(false) { listener.onWifiCredentials(ssid, password) }
 
     @Keep
-    fun onThreadScan(): ByteArray = packThreadScan(guarded(emptyList()) { listener.onThreadScan() })
+    fun onThreadScan(): ByteArray = ThreadScan.pack(guarded(emptyList()) { listener.onThreadScan() })
 
     @Keep
-    fun onOnOff(on: Boolean) = guarded(Unit) { listener.onOnOff(on) }
+    fun onOnOff(endpoint: Int, on: Boolean) = guarded(Unit) { listener.onOnOff(endpoint, on) }
 
     @Keep
     fun onEvent(kind: String, detail: String) {
@@ -175,34 +221,18 @@ class MatterNode(
 
     private external fun nativeStart(
         storageDir: String, discriminator: Int, passcode: Long, deviceName: String, serial: String,
-        onNetworkCommissioning: Boolean,
+        onNetworkCommissioning: Boolean, endpoints: IntArray,
     ): Long
 
     private external fun nativeStop(handle: Long)
     private external fun nativeC1Write(handle: Long, addr: ByteArray, mtu: Int, value: ByteArray)
     private external fun nativeC2Subscribed(handle: Long, addr: ByteArray, subscribed: Boolean)
     private external fun nativeIndicated(handle: Long, ok: Boolean)
-    private external fun nativeSetOnOff(handle: Long, on: Boolean)
+    private external fun nativeSetValue(handle: Long, endpoint: Int, value: Int)
+    private external fun nativeOpenCommissioningWindow(handle: Long)
 
     companion object {
         private const val TAG = "rs-matter"
-
-        /** The layout `rs-matter-android/src/scan.rs` reads (big endian). */
-        internal fun packThreadScan(nets: List<ThreadNetwork>): ByteArray {
-            val out = java.io.ByteArrayOutputStream()
-            val b = java.nio.ByteBuffer.allocate(23)
-            for (n in nets) {
-                val name = n.networkName.toByteArray(Charsets.UTF_8).take(16).toByteArray()
-                b.clear()
-                b.putShort(n.panId.toShort()).putLong(n.extPanId).putShort(n.channel.toShort())
-                b.put(n.rssi.toByte()).put(n.lqi.toByte()).put(n.version.toByte())
-                b.put(n.extAddress.copyOf(8))
-                out.write(b.array(), 0, 23)
-                out.write(name.size)
-                out.write(name)
-            }
-            return out.toByteArray()
-        }
 
         init {
             System.loadLibrary("rs_matter_android")

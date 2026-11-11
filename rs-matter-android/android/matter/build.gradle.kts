@@ -40,4 +40,5 @@ tasks.named("preBuild") { dependsOn(buildRust) }
 
 dependencies {
     implementation("androidx.annotation:annotation:1.9.1")
+    testImplementation("junit:junit:4.13.2")
 }
