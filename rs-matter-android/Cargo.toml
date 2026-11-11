@@ -1,0 +1,28 @@
+[package]
+name = "rs-matter-android"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Run an rs-matter device on Android: BLE commissioning through Android's GATT server, credentials and device logic in Kotlin"
+keywords = ["matter", "android", "thread", "ble", "smart-home"]
+categories = ["network-programming"]
+readme = "README.md"
+
+[lib]
+# `cdylib` for the Android library (librs_matter_android.so), `rlib` for tests and other crates.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rs-matter = { workspace = true, features = ["async-io", "groups", "persistent-subscriptions"] }
+log = { workspace = true }
+async-channel = { workspace = true }
+futures-lite = { workspace = true }
+embassy-time = { workspace = true, features = ["std"] }
+embassy-time-queue-utils = { workspace = true, features = ["generic-queue-64"] }
+rand = { workspace = true, features = ["std", "std_rng", "sys_rng", "thread_rng"] }
+jni = "0.21"
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.14"

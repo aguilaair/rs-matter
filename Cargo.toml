@@ -22,6 +22,7 @@ members = [
         "rs-matter-stack",
         "rs-matter-macros",
         "rs-matter-codegen",
+        "rs-matter-android",
         "examples",
         "tests",
 ]
