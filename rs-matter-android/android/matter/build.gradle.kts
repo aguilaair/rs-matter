@@ -7,11 +7,14 @@ plugins {
 val rustAbis: List<String> = ((findProperty("rustAbis") as String?) ?: "armeabi-v7a,arm64-v8a,x86_64,x86")
     .split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
+// The directory with build-rust.sh: this module's parent, also when another project includes it.
+val androidDir: File = projectDir.parentFile
+
 val buildRust by tasks.registering(Exec::class) {
     group = "build"
     description = "Builds librs_matter_android.so for $rustAbis with cargo and the NDK"
-    workingDir = rootDir
-    commandLine(listOf("./build-rust.sh") + rustAbis)
+    workingDir = androidDir
+    commandLine(listOf(androidDir.resolve("build-rust.sh").absolutePath) + rustAbis)
     outputs.dir(layout.projectDirectory.dir("src/main/jniLibs"))
     // The library depends on the whole rs-matter workspace; cargo knows what changed (and is quick
     // when nothing did), Gradle doesn't.
