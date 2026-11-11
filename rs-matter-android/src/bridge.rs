@@ -138,6 +138,19 @@ impl Shared {
         })
     }
 
+    /// `onThreadScan(): ByteArray`: the Thread networks the app sees, packed by
+    /// `MatterNode.packThreadScan` (see [`crate::scan`]).
+    pub fn thread_scan(&self) -> Result<Vec<u8>, Error> {
+        self.with_env("onThreadScan", |env, node| {
+            let r = env.call_method(node, "onThreadScan", "()[B", &[])?.l()?;
+            if r.is_null() {
+                Ok(Vec::new())
+            } else {
+                env.convert_byte_array(&jni::objects::JByteArray::from(r))
+            }
+        })
+    }
+
     /// `onOnOff(on)`: a controller switched the On/Off endpoint.
     pub fn on_off(&self, on: bool) {
         let _ = self.with_env("onOnOff", |env, node| {

@@ -12,9 +12,10 @@ val buildRust by tasks.registering(Exec::class) {
     description = "Builds librs_matter_android.so for $rustAbis with cargo and the NDK"
     workingDir = rootDir
     commandLine(listOf("./build-rust.sh") + rustAbis)
-    inputs.dir(rootDir.resolve("../src"))
-    inputs.file(rootDir.resolve("../Cargo.toml"))
     outputs.dir(layout.projectDirectory.dir("src/main/jniLibs"))
+    // The library depends on the whole rs-matter workspace; cargo knows what changed (and is quick
+    // when nothing did), Gradle doesn't.
+    outputs.upToDateWhen { false }
 }
 
 android {

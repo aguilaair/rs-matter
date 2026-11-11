@@ -33,11 +33,36 @@ class MatterNode(
         /** Basic Information `NodeLabel`-like name shown by some controllers. */
         val deviceName: String = "Android Matter device",
         val serialNumber: String = "0001",
+        /**
+         * Also commissionable over the IP network while the window is open. Off by default: like
+         * a Thread device not on any network yet, the node is then commissioned over BLE, which is
+         * when commissioners send a Thread dataset or Wi-Fi credentials. Commissioners that can
+         * see the device on the network commission it there and send none.
+         */
+        val onNetworkCommissioning: Boolean = false,
+    )
+
+    /** A Thread network as seen by a scan (what a commissioner looks for before it sends a dataset). */
+    data class ThreadNetwork(
+        val networkName: String,
+        val extPanId: Long,
+        val panId: Int,
+        val channel: Int,
+        /** The extended address of the router heard (8 bytes). */
+        val extAddress: ByteArray = ByteArray(8),
+        val rssi: Int = -50,
+        val lqi: Int = 255,
+        val version: Int = 4,
     )
 
     interface Listener {
         /** The commissioner's Thread operational dataset (TLVs). Return true when taken. */
         fun onThreadDataset(dataset: ByteArray): Boolean = false
+        /**
+         * The Thread networks around, for a commissioner's scan during BLE commissioning. Some
+         * commissioners (Apple's) only send a dataset once its network shows up here.
+         */
+        fun onThreadScan(): List<ThreadNetwork> = emptyList()
         /** Wi-Fi credentials from the commissioner. Return true when taken. */
         fun onWifiCredentials(ssid: ByteArray, password: ByteArray): Boolean = false
         /** A controller switched the On/Off endpoint. */
@@ -82,7 +107,7 @@ class MatterNode(
         config.storageDir.mkdirs()
         handle = nativeStart(
             config.storageDir.absolutePath, config.discriminator, config.passcode,
-            config.deviceName, config.serialNumber,
+            config.deviceName, config.serialNumber, config.onNetworkCommissioning,
         )
         return handle != 0L
     }
@@ -125,6 +150,9 @@ class MatterNode(
         guarded(false) { listener.onWifiCredentials(ssid, password) }
 
     @Keep
+    fun onThreadScan(): ByteArray = packThreadScan(guarded(emptyList()) { listener.onThreadScan() })
+
+    @Keep
     fun onOnOff(on: Boolean) = guarded(Unit) { listener.onOnOff(on) }
 
     @Keep
@@ -147,6 +175,7 @@ class MatterNode(
 
     private external fun nativeStart(
         storageDir: String, discriminator: Int, passcode: Long, deviceName: String, serial: String,
+        onNetworkCommissioning: Boolean,
     ): Long
 
     private external fun nativeStop(handle: Long)
@@ -157,6 +186,23 @@ class MatterNode(
 
     companion object {
         private const val TAG = "rs-matter"
+
+        /** The layout `rs-matter-android/src/scan.rs` reads (big endian). */
+        internal fun packThreadScan(nets: List<ThreadNetwork>): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            val b = java.nio.ByteBuffer.allocate(23)
+            for (n in nets) {
+                val name = n.networkName.toByteArray(Charsets.UTF_8).take(16).toByteArray()
+                b.clear()
+                b.putShort(n.panId.toShort()).putLong(n.extPanId).putShort(n.channel.toShort())
+                b.put(n.rssi.toByte()).put(n.lqi.toByte()).put(n.version.toByte())
+                b.put(n.extAddress.copyOf(8))
+                out.write(b.array(), 0, 23)
+                out.write(name.size)
+                out.write(name)
+            }
+            return out.toByteArray()
+        }
 
         init {
             System.loadLibrary("rs_matter_android")

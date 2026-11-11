@@ -47,6 +47,23 @@ class MainActivity : Activity() {
                     return true
                 }
 
+                // For the test: the Thread network to report, from intent extras
+                // (adb shell am start ... --es thread_name NAME --es thread_extpanid HEX
+                //  --ei thread_panid N --ei thread_channel N --es thread_extaddr HEX).
+                override fun onThreadScan(): List<MatterNode.ThreadNetwork> {
+                    val name = intent.getStringExtra("thread_name") ?: return emptyList()
+                    val net = MatterNode.ThreadNetwork(
+                        networkName = name,
+                        extPanId = java.lang.Long.parseUnsignedLong(intent.getStringExtra("thread_extpanid") ?: "0", 16),
+                        panId = intent.getIntExtra("thread_panid", 0),
+                        channel = intent.getIntExtra("thread_channel", 11),
+                        extAddress = (intent.getStringExtra("thread_extaddr") ?: "0000000000000000")
+                            .chunked(2).map { it.toInt(16).toByte() }.toByteArray(),
+                    )
+                    show("Thread scan: reporting ${net.networkName} (channel ${net.channel})")
+                    return listOf(net)
+                }
+
                 override fun onWifiCredentials(ssid: ByteArray, password: ByteArray): Boolean {
                     show("Wi-Fi credentials received for ${String(ssid)}")
                     return true

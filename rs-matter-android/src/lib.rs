@@ -14,6 +14,7 @@ mod bridge;
 mod gatt;
 mod netctl;
 mod node;
+mod scan;
 
 pub use gatt::AndroidGattPeripheral;
 pub use netctl::AndroidNetCtl;
@@ -35,12 +36,14 @@ fn init_logging() {
     #[cfg(target_os = "android")]
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Info)
+            .with_max_level(log::LevelFilter::Debug)
+            // Each command a controller invokes (rs_matter_im::invoker) is logged at debug level.
+            .with_filter(android_logger::FilterBuilder::new().parse("info,rs_matter_im::invoker=debug").build())
             .with_tag("rs-matter"),
     );
 }
 
-/// `MatterNode.nativeStart(storageDir, discriminator, passcode, deviceName, serial): Long`.
+/// `MatterNode.nativeStart(storageDir, discriminator, passcode, deviceName, serial, onNetworkCommissioning): Long`.
 /// Starts the node on its own thread; returns the handle the other calls take, or 0.
 #[no_mangle]
 pub extern "system" fn Java_org_rsmatter_android_MatterNode_nativeStart<'l>(
@@ -51,6 +54,7 @@ pub extern "system" fn Java_org_rsmatter_android_MatterNode_nativeStart<'l>(
     passcode: jlong,
     device_name: JString<'l>,
     serial: JString<'l>,
+    on_network_commissioning: jboolean,
 ) -> jlong {
     init_logging();
     let strings = (|| -> jni::errors::Result<(String, String, String)> {
@@ -74,8 +78,10 @@ pub extern "system" fn Java_org_rsmatter_android_MatterNode_nativeStart<'l>(
         passcode: passcode as u32,
         device_name: name,
         serial,
+        on_network_commissioning: on_network_commissioning == JNI_TRUE,
     };
 
+    scan::register(shared.clone());
     let thread_shared = shared.clone();
     let spawned = std::thread::Builder::new()
         .name("rs-matter".into())

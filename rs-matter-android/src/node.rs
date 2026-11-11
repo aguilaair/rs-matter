@@ -55,6 +55,10 @@ pub struct NodeConfig {
     pub passcode: u32,
     pub device_name: String,
     pub serial: String,
+    /// Also commissionable over the IP network while the commissioning window is open. Off by
+    /// default: like a Thread device that isn't on any network yet, the node is then found and
+    /// commissioned over BLE only, which is when commissioners send the network credentials.
+    pub on_network_commissioning: bool,
 }
 
 /// Runs the node until it fails or Kotlin stops it. Blocks the calling thread.
@@ -71,7 +75,7 @@ pub fn run(shared: Arc<Shared>, cfg: NodeConfig) -> Result<(), Error> {
         discriminator: cfg.discriminator,
     };
 
-    report_codes(&shared, dev_det, &dev_comm)?;
+    report_codes(&shared, dev_det, &dev_comm, cfg.on_network_commissioning)?;
 
     let mut slot: Box<MaybeUninit<ThreadStack>> = Box::new_uninit();
     let stack: &ThreadStack = slot.init_with(MatterStack::init(dev_det, dev_comm, &TEST_DEV_ATT));
@@ -95,19 +99,26 @@ pub fn run(shared: Arc<Shared>, cfg: NodeConfig) -> Result<(), Error> {
         KotlinOnOff { shared: shared.clone() },
     );
 
-    let matter = pin!(stack.run_thread(
-        PreexistingWireless::new(
-            StdNetStack::new(),
-            SysNetifs,
-            AndroidNetCtl::new(NetworkType::Thread, shared.clone()),
-            rs_matter::transport::network::mdns::builtin::BuiltinMdns::new(),
-            AndroidGattPeripheral::new(shared.clone()),
-        ),
-        &crypto,
-        data_model(stack.matter(), rand, &on_off),
-        kv,
-        (),
-    ));
+    let wireless = PreexistingWireless::new(
+        StdNetStack::new(),
+        SysNetifs,
+        AndroidNetCtl::new(NetworkType::Thread, shared.clone()),
+        rs_matter::transport::network::mdns::builtin::BuiltinMdns::new(),
+        AndroidGattPeripheral::new(shared.clone()),
+    );
+    let handler = data_model(stack.matter(), rand, &on_off);
+    let matter = async {
+        if cfg.on_network_commissioning {
+            // BLE and the IP network at once: commissioners may pick either (and pick IP when they
+            // can see it, sending no network credentials).
+            stack.run_thread(wireless, &crypto, handler, kv, ()).await
+        } else {
+            // BLE while the commissioning window is open, then the IP network: the credentials
+            // reach the app (AndroidNetCtl::connect) when the node goes operational.
+            stack.run_thread_no_coex(wireless, &crypto, handler, kv, ()).await
+        }
+    };
+    let matter = pin!(matter);
 
     let stop = async {
         let _ = shared.stop.1.recv().await;
@@ -118,11 +129,16 @@ pub fn run(shared: Arc<Shared>, cfg: NodeConfig) -> Result<(), Error> {
     futures_lite::future::block_on(rs_matter::utils::futures::select(matter, stop).coalesce())
 }
 
-/// Tells Kotlin the manual pairing code and the QR code text (BLE + on-network).
-fn report_codes(shared: &Shared, dev_det: &BasicInfoConfig, comm: &BasicCommData) -> Result<(), Error> {
+/// Tells Kotlin the manual pairing code and the QR code text.
+fn report_codes(shared: &Shared, dev_det: &BasicInfoConfig, comm: &BasicCommData, on_network: bool) -> Result<(), Error> {
     shared.event("pairing_code", &comm.compute_pretty_pairing_code());
+    let caps = if on_network {
+        DiscoveryCapabilities::BLE | DiscoveryCapabilities::IP
+    } else {
+        DiscoveryCapabilities::BLE
+    };
     let payload = QrPayload::new(
-        DiscoveryCapabilities::BLE | DiscoveryCapabilities::IP,
+        caps,
         CommFlowType::Standard,
         comm.clone(),
         dev_det.vid,

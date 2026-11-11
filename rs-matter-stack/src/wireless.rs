@@ -51,6 +51,35 @@ mod wifi;
 /// BTP transport: add it to `B` of a stack that runs them.
 pub const BTP_BUMP_SIZE: usize = core::mem::size_of::<Btp>() + core::mem::align_of::<Btp>();
 
+/// Scans for networks while the node is being commissioned over BLE, when the operational
+/// network controller doesn't exist yet: calls `f` for each network found.
+///
+/// Commissioners send `ScanNetworks` over BLE before they provision a network, and some (Apple's)
+/// wait until the network they mean to provision shows up in the results. Platforms whose radio
+/// can scan without the operational controller, or that otherwise know what is around, register
+/// one with [`set_commissioning_scanner`].
+pub type CommissioningScanner = fn(
+    net_type: NetworkType,
+    f: &mut dyn FnMut(&net_comm::NetworkScanInfo) -> Result<(), Error>,
+) -> Result<(), Error>;
+
+/// A [`CommissioningScanner`] as a pointer (null: none). An atomic, as the default raw mutex
+/// of `rs-matter-utils` isn't `Sync` without the `send-sync` feature; loads and stores only.
+static COMMISSIONING_SCANNER: core::sync::atomic::AtomicPtr<()> =
+    core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
+
+/// Register (or, with `None`, remove) the [`CommissioningScanner`] of this process.
+pub fn set_commissioning_scanner(scanner: Option<CommissioningScanner>) {
+    let p = scanner.map_or(core::ptr::null_mut(), |f| f as *mut ());
+    COMMISSIONING_SCANNER.store(p, core::sync::atomic::Ordering::Release);
+}
+
+fn commissioning_scanner() -> Option<CommissioningScanner> {
+    let p = COMMISSIONING_SCANNER.load(core::sync::atomic::Ordering::Acquire);
+    // SAFETY: only `set_commissioning_scanner` stores into it, and only `CommissioningScanner`s.
+    (!p.is_null()).then(|| unsafe { core::mem::transmute::<*mut (), CommissioningScanner>(p) })
+}
+
 /// A composite wireless network controller that is the SAME concrete type during
 /// both the (BLE) commissioning phase and the operational (Thread/Wifi) phase.
 ///
@@ -65,7 +94,7 @@ pub const BTP_BUMP_SIZE: usize = core::mem::size_of::<Btp>() + core::mem::align_
 /// is identical across phases and the dispatch tree monomorphizes once.
 ///
 /// The `Commissioning` variant reproduces the behavior of the former
-/// `NoopWirelessNetCtl`: `scan` errors with `InvalidAction`, `connect` only
+/// `NoopWirelessNetCtl`, except that `scan` reports no networks (instead of `InvalidAction`), `connect` only
 /// checks the creds match the network type, and every diag returns its default.
 /// It refuses to disable the interface being commissioned.
 /// The `Operational` variant delegates to the real controller `Q`.
@@ -142,10 +171,18 @@ where
         F: FnMut(&net_comm::NetworkScanInfo) -> Result<(), Error> + MaybeSend,
     {
         match self {
-            // Matches the former `NoopWirelessNetCtl::scan`.
-            Self::Commissioning(_) => Err(NetCtlError::Other(
-                rs_matter_utils::error::ErrorCode::InvalidAction.into(),
-            )),
+            // The operational controller doesn't exist yet. A platform that can still scan (or
+            // knows what is around) registers a `CommissioningScanner`; otherwise the scan is
+            // empty and successful. An error here would become the IM status of `ScanNetworks`
+            // (`map_ctl` passes `NetCtlError::Other` through), and commissioners that scan
+            // before `AddOrUpdateThreadNetwork` (Apple's, for one) abort on it.
+            Self::Commissioning(net_type) => {
+                let mut f = f;
+                match commissioning_scanner() {
+                    Some(scan) => Ok(scan(*net_type, &mut f)?),
+                    None => Ok(()),
+                }
+            }
             Self::Operational(q) => q.scan(network, f).await,
         }
     }

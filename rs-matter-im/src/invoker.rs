@@ -221,6 +221,11 @@ where
             Ok((cmd, data)) => {
                 let pos = tw.get_tail();
 
+                debug!(
+                    "Invoking command {}/{:#x}/{:#x}",
+                    cmd.endpoint_id, cmd.cluster_id, cmd.cmd_id
+                );
+
                 let result = self.invoke(cmd, data, &mut *tw).await;
 
                 match result {
@@ -232,7 +237,10 @@ where
                         }
                     }
                     Err(err) if err.code() != ErrorCode::NoSpace => {
-                        error!("Error invoking command: {}", err);
+                        error!(
+                            "Error invoking command {}/{:#x}/{:#x}: {}",
+                            cmd.endpoint_id, cmd.cluster_id, cmd.cmd_id, err
+                        );
 
                         tw.rewind_to(pos);
 

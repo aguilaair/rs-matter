@@ -4,7 +4,7 @@
 //! which decides what to do with them: hand a dataset to a Thread border router or radio, keep it,
 //! join a Wi-Fi network…
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use log::{info, warn};
 
@@ -21,11 +21,22 @@ use crate::bridge::Shared;
 pub struct AndroidNetCtl {
     net_type: NetworkType,
     shared: Arc<Shared>,
+    /// The credentials the app last accepted: the node counts as connected to them (it is on
+    /// Android's IP network either way), so rs-matter's connection manager doesn't retry, and
+    /// the app gets the same credentials once.
+    accepted: Mutex<Option<Vec<u8>>>,
 }
 
 impl AndroidNetCtl {
     pub fn new(net_type: NetworkType, shared: Arc<Shared>) -> Self {
-        Self { net_type, shared }
+        Self { net_type, shared, accepted: Mutex::new(None) }
+    }
+
+    fn key(creds: &WirelessCreds<'_>) -> Vec<u8> {
+        match creds {
+            WirelessCreds::Thread { dataset_tlv } => dataset_tlv.to_vec(),
+            WirelessCreds::Wifi { ssid, pass } => [*ssid, &[0], *pass].concat(),
+        }
     }
 }
 
@@ -48,6 +59,10 @@ impl NetCtl for AndroidNetCtl {
     }
 
     async fn connect(&self, creds: &WirelessCreds<'_>) -> Result<(), NetCtlError> {
+        let key = Self::key(creds);
+        if self.accepted.lock().unwrap().as_deref() == Some(&key[..]) {
+            return Ok(()); // already handed over and taken
+        }
         let accepted = match creds {
             WirelessCreds::Thread { dataset_tlv } => {
                 info!("Thread operational dataset received ({} bytes)", dataset_tlv.len());
@@ -59,6 +74,7 @@ impl NetCtl for AndroidNetCtl {
             }
         };
         if accepted {
+            *self.accepted.lock().unwrap() = Some(key);
             Ok(())
         } else {
             warn!("The app refused the network credentials");
@@ -73,6 +89,10 @@ impl NetChangeNotif for AndroidNetCtl {
     }
 }
 
-impl WirelessDiag for AndroidNetCtl {}
+impl WirelessDiag for AndroidNetCtl {
+    fn connected(&self) -> Result<bool, Error> {
+        Ok(self.accepted.lock().unwrap().is_some())
+    }
+}
 impl WifiDiag for AndroidNetCtl {}
 impl ThreadDiag for AndroidNetCtl {}
